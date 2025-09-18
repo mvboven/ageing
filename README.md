@@ -7,7 +7,7 @@ This repository contains code for simulating an age-structured SIRV model with s
 
 **What does the program do**
 * Sets up an age grid (0–120 years, default step 0.25y) and simulates dynamics over long horizons.
-* Constructs a contact matrix using data in _contact_matrix_data_120.txt_. The contact matrix is scaled so that its largest eigenvalue equals 1. Hence R0=beta/gamma. code has been checked for threshold behaviour at R0:=1 (using fixed demography). code also yield correct final size when all contact matrix entries are identical.
+* Constructs a contact matrix using data in _contact_matrix_data_120.txt_. The contact matrix is scaled so that its largest eigenvalue equals 1. Hence R0=beta/gamma. The code has been checked for threshold behaviour at R0=1 (using fixed demography, of course). code also yield correct final size when all contact matrix entries are identical.
 * It implements Erlang-distributed immunity, both after vaccination and infection.
 * It allows for season-to-season variation in waning rates by sampling from a (Gamma) distribution.
 * It includes seasonal forcing of transmission, age-window vaccination campaigns, and age-dependent background mortality.

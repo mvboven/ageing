@@ -28,56 +28,66 @@ For enquiries, please contact:
 
 ## Directory structure
 
-The code is organised into separate files for different simulation scenarios, allowing scenarios to be run and modified independently.
+The repository separates shared model code, simulation runs, and figure scripts:
 
 - `data/` — Input data, including the contact matrix.
-- `scripts/` — Julia model and scenario files, as well as scripts for analysis and plotting.
+- `scripts/models/` — Shared Julia equations and sweep logic: `ageing_general_model.jl` and `influenza_model.jl`.
+- `scripts/runs/` — Short Julia scenario entry points for general ageing and influenza simulations.
+- `scripts/figure/` — Figure-generation scripts named `Figure1.R` to `Figure7.R`, with superseded figure versions in `scripts/figure/archive/`.
 - `output/` or `outputs/` — Generated simulation results, including mortality and YLL calculations.
 - `figures/` — Generated plots and heatmaps.
 
 ### Scenarios
 
-The simulations are organised into separate scenario files in `scripts/`, each focusing on different demographic assumptions or vaccination strategies.
-
 **General scenarios**
 
-- `ageing_general_2025.jl` — General SIRV model using mortality assumptions for 2025. Performs parameter sweeps over transmission rates, immunity waning rates, and vaccination start ages.
-- `ageing_general_2050.jl` — Similar to the 2025 scenario, but using mortality assumptions for 2050 to investigate the effects of demographic changes on mortality and YLL.
-- `ageing_general_CMfrequency.jl` — Scenario intended for investigating contact matrix frequency assumptions. Currently contains the same implementation as the 2050 scenario.
+- `scripts/runs/ageing_general_2025.jl` — General SIRV model using mortality assumptions for 2025.
+- `scripts/runs/ageing_general_2050.jl` — General SIRV model using mortality assumptions for 2050.
+- `scripts/runs/ageing_general_CMfrequency.jl` — Currently identical in behaviour to the 2050 scenario.
+
+These all use `scripts/models/ageing_general_model.jl`. The 2025 and 2050 run scripts provide distinct mortality offsets, R0 grids, and output names.
 
 **Influenza scenarios**
 
-- `ageing_influenza_coverage30.jl` — Influenza-like scenario with seasonal transmission, annual vaccination campaigns, and 30% vaccination coverage. Explores different transmission rates, immunity durations, and vaccination start ages.
-- `ageing_influenza_coverage80.jl` — Same influenza-like scenario, but with 80% vaccination coverage, allowing comparison of the effects of higher vaccination coverage on mortality and YLL.
+- `scripts/runs/ageing_influenza_coverage30.jl` — Seasonal influenza parameter sweep with 30% vaccination coverage.
+- `scripts/runs/ageing_influenza_coverage80.jl` — Seasonal influenza parameter sweep with 80% vaccination coverage.
+- `scripts/runs/ageing_influenza_timeseries.jl` — Generates `time_series_<tag>_fva<age>.csv` and `time_age_<tag>_fva<age>.csv` using the same influenza model.
 
-Each scenario can be run independently and produces scenario-specific output files.
+Both influenza coverage sweeps and the time-series run use `scripts/models/influenza_model.jl`.
 
 ## Running simulations
 
-Simulations are run using Julia. Each scenario is defined in a separate file and can be executed independently.
-
-From the repository root, run:
+From the repository root, run the scenario of interest:
 
 ```bash
-julia scripts/<scenario_file>.jl
+julia --project=. scripts/runs/ageing_general_2025.jl
+julia --project=. scripts/runs/ageing_general_2050.jl
+julia --project=. scripts/runs/ageing_influenza_coverage80.jl
+julia --project=. scripts/runs/ageing_influenza_timeseries.jl
 ```
 
-Replace `<scenario_file>.jl` with the relevant scenario script.
+The `test_ageing_*.sh` Slurm scripts use the same `scripts/runs/` paths.
 
-The scenarios allow different parameter configurations and parameter sweeps to be run without modifying the other scenario files.
+Figure generation is separate. Run R figure scripts from the repository root, so their `output/`, `figures/`, and `functions/` paths resolve correctly:
+
+```bash
+Rscript scripts/figure/Figure4.R
+```
+
+For the old general-scenario Julia diagnostic plots, an optional standalone `scripts/figure/ageing_general_diagnostics.jl` script is available. It is not executed by the general parameter sweeps.
 
 ## Input and output
 
 ### Input
 
-- Input data is the contact data in `data/contact_matrix_data_120.txt`. Notice that some other pathogen- and population-specific parameters are defined in the code (to be streamlined).
-- Scenario-specific parameters are defined in separate Julia scenario files.
+- Contact data is in `data/contact_matrix_data_120.txt`.
+- Scenario-specific parameters are in the run scripts, with shared equations and parameters in `scripts/models/`.
 
 ### Output
 
-- Mortality and years-of-life-lost (YLL) results are saved as scenario-specific CSV files in the output directory.
-- Various plots and time–age heatmaps are also produced and saved in the figures directory.
-- Generated output files and figures are ignored by Git and can be regenerated by running the relevant scenarios.
+- Mortality, years-of-life-lost (YLL), and time-series results are saved as scenario-specific CSV files in `output/`.
+- Figure-generation scripts in `scripts/figure/` write plots to `figures/`.
+- Generated output files and figures are ignored by Git and can be regenerated independently.
 
 ## Dependencies
 

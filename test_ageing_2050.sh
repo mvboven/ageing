@@ -34,6 +34,6 @@ srun "$HOME/.juliaup/bin/julia" \
     --startup-file=no \
     --project=. \
     --threads="${SLURM_CPUS_PER_TASK}" \
-    scripts/ageing_general_2050.jl
+    scripts/runs/ageing_general_2050.jl
 
 echo "Job finished at: $(date)"

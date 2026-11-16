@@ -1,14 +1,13 @@
 import Pkg
 
 # Project root: one level above this script's scripts/ directory
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 packages = [
     "DifferentialEquations",
     "DiffEqCallbacks",
     "CSV",
     "DataFrames",
-    "Plots",
     "QuadGK",
     "Distributions",
     "ThreadsX",
@@ -37,9 +36,8 @@ println("Julia threads : ", Threads.nthreads())
 println("BLAS threads  : ", BLAS.get_num_threads())
 
 # directories 
-base_dir    = normpath(joinpath(@__DIR__, ".."))
+base_dir    = normpath(joinpath(@__DIR__, "..", ".."))
 data_dir    = joinpath(base_dir, "data")
-figures_dir = joinpath(base_dir, "figures")
 output_dir  = joinpath(base_dir, "output")
 
 # time-age grid 
@@ -51,7 +49,8 @@ n_age       = length(age_points)
 
 # transmission related parameters
 gamma      = 50.0               # recovery rate (duration: 1 week)
-force_frac = 0.05               # seasonal forcing; influenza ()0.03-0.3
+# seasonal forcing amplitudes for the parameter sweep
+forcing_vals = [0.0, 0.05, 0.10, 0.15, 0.20, 0.30]
 
 # R0 sweep 
 R0_vals   = [1.5, 1.75, 2, 2.25, 2.5, 2.75, 3, 3.25, 3.5, 3.75, 4, 4.25, 4.5, 4.75, 5, 5.25, 
@@ -59,7 +58,7 @@ R0_vals   = [1.5, 1.75, 2, 2.25, 2.5, 2.75, 3, 3.25, 3.5, 3.75, 4, 4.25, 4.5, 4.
 beta_vals = gamma .* R0_vals
 
 # influenza-style vaccination
-coverage_campaign = 0.80        # 80% per summer campaign
+# Coverage is supplied by the calling scenario before including this file.
 camp_phase        = 10/12.0     # campaigns start in October
 camp_width        = 2.0/12.0    # 2 month window (October–November)
 rate_in_window    = -log(1 - coverage_campaign) / camp_width
@@ -327,12 +326,13 @@ for i in 1:n_age
     u0[n_age+i] = I0
 end
 
+
 # single run function
-function run_one!(β::Float64, ν::Float64, first_age::Float64)
+function run_one!(β::Float64, ν::Float64, first_age::Float64, forcing::Float64)
     # vaccination schdule, t_v=200 represents no vccination
     mask = first_age == 200.0 ? fill(0.0, n_age) : age_mask_from_first(age_points, first_age, end_age)
     vac  = VacSched(mask, rate_in_window, camp_width, camp_phase, tmin)  # vaccination allowed from t = tmin
-    cache = ODECache(n_age, age_points, da, N0, gamma, force_frac)
+    cache = ODECache(n_age, age_points, da, N0, gamma, forcing)
     prob  = ODEProblem(f_pde!, u0, (tmin, tmax), (β, ν, contact_matrix, cache, vac, ALPHA_SCHED))
     sol   = solve(prob, Tsit5(); reltol=1e-4, abstol=1e-6,  # -3 and -5 yield similar results; -4 and -5 identical
                   callback=PositiveDomain(), saveat=da, dense=false)
@@ -371,7 +371,7 @@ function run_one!(β::Float64, ν::Float64, first_age::Float64)
         mul!(FOI, contact_matrix, I_div_N)  # FOI[a] up to a constant factor
 
         t_now = sol.t[i]
-        fsc   = 1 + force_frac * cos(2π * t_now)
+        fsc   = 1 + forcing * cos(2π * t_now)
         @. FOI = β * fsc * FOI               # λ(t,a) = β fsc * (C * I/N)
 
         weights = FOI .* S                  # λ(t,a) S(t,a)
@@ -390,215 +390,41 @@ function run_one!(β::Float64, ν::Float64, first_age::Float64)
         nu = ν,
         nu_duration_years = 1/ν,
         first_age = first_age,
+        force_frac = forcing,
         total_mortality = mean(mort_vals),
         total_yll       = mean(yll_vals),
         mean_age_infection = mean_mai   
     )
 end
 
-# time stamp
-stamp = Dates.format(Dates.today(), "yyyymmdd")
-println("Output stamp: ", stamp)
+# Sweep includes zero seasonality, the original 5% baseline, and stronger forcing.
+function run_influenza_sweep(; forcing_values=forcing_vals)
+    mkpath(output_dir)
+    stamp = Dates.format(Dates.today(), "yyyymmdd")
+    println("Output stamp: ", stamp)
 
-# parameter sweep
-param_sets = [(β, ν, a0)
-              for β in beta_vals
-              for ν in nu_vals
-              for a0 in first_age_range]
+    param_sets = [(β, ν, a0, forcing)
+                  for forcing in forcing_values
+                  for β in beta_vals
+                  for ν in nu_vals
+                  for a0 in first_age_range]
 
-prog = Progress(length(param_sets); desc="running sweeps", barlen=40, dt=5.0)
-tuples = ThreadsX.map(enumerate(param_sets)) do (i, ps)
-    β, ν, a0 = ps
-    result = run_one!(β, ν, a0)
-    next!(prog)
-    result
-end
-
-# save output
-df = DataFrame(tuples)
-df_mort = select(df, :beta, :R0, :nu, :nu_duration_years, :first_age, :total_mortality)
-df_yll  = select(df, :beta, :R0, :nu, :nu_duration_years, :first_age, :total_yll)
-#df_mai  = select(df, :beta, :R0, :nu, :nu_duration_years, :first_age, :mean_age_infection)
-
-CSV.write(joinpath(output_dir, "mortality_influenza_2025_v50_f005_coverage80_" * stamp * ".csv"), df_mort)
-CSV.write(joinpath(output_dir, "yll_influenza_2025_v50_f005_coverage80_" * stamp * ".csv"), df_yll)
-# CSV.write(joinpath(output_dir, "mai_influenza_2025_v50_f005_coverage80_" * stamp * ".csv"), df_mai)
-
-println("Finished sweeps: ", nrow(df), " runs.")
-
-# ======================= #
-# single run with figures #
-# ======================= #
-
-# parameters for the single scenario
-# NOTE: some parameters missing, make explicit 
-R0_single   = 3.0
-β_single    = gamma * R0_single
-#alpha_const = AlphaSched([tmin, tmax], [0.1])
-ν_single    = 0.5                 
-first_age_s = 60.0  
-# chagne coverage in the above           
-
-# build vaccination schedule for this scenario
-#mask_s = age_mask_from_first(age_points, first_age_s, end_age)
-#vac_s  = VacSched(mask_s, rate_in_window, camp_width, camp_phase)
-t_vac_start = 200.0
-mask_s = age_mask_from_first(age_points, first_age_s, end_age)
-vac_s  = VacSched(mask_s, rate_in_window, camp_width, camp_phase, t_vac_start)
-
-# solve single scenario with finer output for export: 20 time points per year
-cache_s = ODECache(n_age, age_points, da, N0, gamma, force_frac)
-dt_out  = 1.0 / 20.0             # 20 points / year
-prob_s  = ODEProblem(f_pde!, u0, (tmin, tmax),
-                     (β_single, ν_single, contact_matrix, cache_s, vac_s, ALPHA_SCHED))
-sol_s   = solve(prob_s, Tsit5(); reltol=1e-4, abstol=1e-6,
-                callback=PositiveDomain(), saveat=dt_out, dense=false)
-
-# unpack solution matrices
-t     = sol_s.t
-all_u = hcat(sol_s.u...)
-S_mat  = all_u[1:n_age,                 :]'
-I_mat  = all_u[n_age+1:2*n_age,         :]'
-R1_mat = all_u[2*n_age+1:3*n_age,       :]'
-V1_mat = all_u[3*n_age+1:4*n_age,       :]'
-R2_mat = all_u[4*n_age+1:5*n_age,       :]'
-V2_mat = all_u[5*n_age+1:6*n_age,       :]'
-M_mat  = gamma .* (I_mat .* (ifr.(age_points))')  # instantaneous death *rate* per age bin
-
-# totals over time (aggregated over age, using da as age-bin width)
-tot_S = vec(sum(S_mat,  dims=2)) .* da
-tot_I = vec(sum(I_mat,  dims=2)) .* da
-tot_R = vec(sum(R1_mat .+ R2_mat, dims=2)) .* da
-tot_V = vec(sum(V1_mat .+ V2_mat, dims=2)) .* da
-tot_N = tot_S .+ tot_I .+ tot_R .+ tot_V
-
-# total mortality incidence over time (aggregated over age)
-mort_inc_total = vec(sum(M_mat, dims=2)) .* da   # integral over age
-
-# export last 100 years
-t_start_export = tmax - 100.0           # 100 years before tmax
-idx_sel = findall(t .>= t_start_export)
-
-# with dt_out=1/20, this gives 2001 points
-if length(idx_sel) > 100 * 20
-    idx_sel = idx_sel[2:end]
-end
-
-t_sel    = t[idx_sel]
-S_sel    = tot_S[idx_sel]
-I_sel    = tot_I[idx_sel]
-R_sel    = tot_R[idx_sel]
-V_sel    = tot_V[idx_sel]
-N_sel    = tot_N[idx_sel]
-M_sel    = mort_inc_total[idx_sel]
-
-df_time = DataFrame(
-    t     = t_sel,
-    N     = N_sel,
-    S     = S_sel,
-    I     = I_sel,
-    R     = R_sel,
-    V     = V_sel,
-    M_inc = M_sel,
-)
-
-CSV.write(joinpath(output_dir,
-          "time_series_influenza_2025_coverage80_" * stamp * ".csv"),
-          df_time)
-
-# take same time points (last 100 years, 20/year)
-I_sel_full = I_mat[idx_sel, :]
-
-# one age value per year: 120 ages (0..119 years)
-bins_per_year = Int(round(1 / da))   # e.g. 10 if da = 0.1
-age_inds_year = 1:bins_per_year:n_age
-ages_year     = age_points[age_inds_year]   # ~ 0,1,2,...,119
-
-I_ta = I_sel_full[:, age_inds_year]  # (time × 120)
-
-df_I = DataFrame()
-df_I.t = t_sel
-for (j, age) in enumerate(ages_year)
-    colname = Symbol("age_$(Int(round(age)))")
-    df_I[!, colname] = I_ta[:, j]
-end
-
-CSV.write(joinpath(output_dir,
-          "time_age_influenza_2025_coverage80_" * stamp * ".csv"),
-          df_I)
-
-plt1 = plot(t, tot_S, label="S")
-plot!(plt1, t, tot_I, label="I")
-plot!(plt1, t, tot_R, label="R")
-plot!(plt1, t, tot_V, label="V")
-plot!(plt1, t, tot_N, label="N")
-xlabel!(plt1, "time (years)")
-ylabel!(plt1, "number")
-savefig(plt1, joinpath(figures_dir, "compartments_over_time.pdf"))
-
-# total mortality over time (after transient)
-mort_total = vec(sum(M_mat, dims=2))
-sel = t .>= 20.0
-plt2 = plot(t[sel], mort_total[sel], label="mortality")
-xlabel!(plt2, "time (years)")
-ylabel!(plt2, "mortality incidence (per year)")
-savefig(plt2, joinpath(figures_dir, "mortality_over_time.pdf"))
-
-# mean age of infection over time   
-mai_over_time = similar(t)
-I_div_N_vec   = zeros(n_age)
-FOI_vec       = zeros(n_age)
-
-for (k, tk) in enumerate(t)
-    S_k  = @view S_mat[k, :]
-    I_k  = @view I_mat[k, :]
-    R1_k = @view R1_mat[k, :]
-    V1_k = @view V1_mat[k, :]
-    R2_k = @view R2_mat[k, :]
-    V2_k = @view V2_mat[k, :]
-
-    N_k = S_k .+ I_k .+ R1_k .+ R2_k .+ V1_k .+ V2_k .+ 1e-6
-
-    @. I_div_N_vec = I_k / N_k
-    mul!(FOI_vec, contact_matrix, I_div_N_vec)
-
-    fsc = 1 + force_frac * cos(2π * tk)
-    @. FOI_vec = β_single * fsc * FOI_vec      # λ(t,a)
-
-    weights = FOI_vec .* S_k                   # λ(t,a) S(t,a)
-    denom   = sum(weights) * da
-    if denom > 0
-        num = sum(age_points .* weights) * da
-        mai_over_time[k] = num / denom
-    else
-        mai_over_time[k] = NaN
+    prog = Progress(length(param_sets); desc="running sweeps", barlen=40, dt=5.0)
+    tuples = ThreadsX.map(enumerate(param_sets)) do (i, ps)
+        β, ν, a0, forcing = ps
+        result = run_one!(β, ν, a0, forcing)
+        next!(prog)
+        result
     end
+
+    df = DataFrame(tuples)
+    df_mort = select(df, :beta, :R0, :nu, :nu_duration_years, :first_age, :force_frac, :total_mortality)
+    df_yll  = select(df, :beta, :R0, :nu, :nu_duration_years, :first_age, :force_frac, :total_yll)
+
+    coverage_tag = Int(round(100 * coverage_campaign))
+    CSV.write(joinpath(output_dir, "mortality_influenza_2025_v50_forcing_sweep_coverage$(coverage_tag)_$(stamp).csv"), df_mort)
+    CSV.write(joinpath(output_dir, "yll_influenza_2025_v50_forcing_sweep_coverage$(coverage_tag)_$(stamp).csv"), df_yll)
+
+    println("Finished sweeps: ", nrow(df), " runs.")
+    return df
 end
-
-pltMAI = plot(t, mai_over_time, label="mean age of infection")
-xlabel!(pltMAI, "time (years)")
-ylabel!(pltMAI, "mean age of infection (years)")
-savefig(pltMAI, joinpath(figures_dir, "mean_age_infection_over_time.pdf"))
-
-# time–age heatmaps
-maxI = maximum(I_mat[end, :])
-maxM = maximum(M_mat[end, :])
-
-pltS = heatmap(t, age_points, S_mat', xlabel="time (years)", ylabel="age (years)")
-savefig(pltS, joinpath(figures_dir, "heatmap_S.pdf"))
-
-pltI = heatmap(t, age_points, I_mat', xlabel="time (years)", ylabel="age (years)", clim=(0, maxI))
-savefig(pltI, joinpath(figures_dir, "heatmap_I.pdf"))
-
-pltR = heatmap(t, age_points, (R1_mat .+ R2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(pltR, joinpath(figures_dir, "heatmap_R.pdf"))
-
-pltV = heatmap(t, age_points, (V1_mat .+ V2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(pltV, joinpath(figures_dir, "heatmap_V.pdf"))
-
-pltM = heatmap(t, age_points, M_mat', xlabel="time (years)", ylabel="age (years)", clim=(0, maxM))
-savefig(pltM, joinpath(figures_dir, "heatmap_M.pdf"))
-
-pltN = heatmap(t, age_points, (S_mat .+ I_mat .+ R1_mat .+ R2_mat .+ V1_mat .+ V2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(pltN, joinpath(figures_dir, "heatmap_N.pdf"))
- 

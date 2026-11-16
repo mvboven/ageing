@@ -42,8 +42,11 @@ sci_fmt <- function(x) {
 
 #df_ts <- read_csv("data/time_series_influenza_2025_20251117.csv")
 #df_ta <- read_csv("data/time_age_influenza_2025_20251117.csv")
-df_ts <- read_csv("output/time_series_influenza_2025_coverage80_20261020.csv")
-df_ta <- read_csv("output/time_age_influenza_2025_coverage80_20261020.csv")
+output_tag <- "figure4_baseline"
+first_age_s <- 60  # must match the Julia time-series simulation
+fva_tag <- paste0("fva", gsub(".", "p", as.character(first_age_s), fixed = TRUE))
+df_ts <- read_csv(paste0("output/time_series_", output_tag, "_", fva_tag, ".csv"))
+df_ta <- read_csv(paste0("output/time_age_", output_tag, "_", fva_tag, ".csv"))
 
 t_ref <- 150
 

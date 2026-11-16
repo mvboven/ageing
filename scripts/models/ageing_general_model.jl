@@ -1,14 +1,15 @@
+# Shared general ageing model; the run script supplies scenario_year,
+# mortality_reference_year_offset and R0_vals.
 import Pkg
 
 # Project root: one level above this script's scripts/ directory
-Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 packages = [
     "DifferentialEquations",
     "DiffEqCallbacks",
     "CSV",
     "DataFrames",
-    "Plots",
     "QuadGK",
     "Distributions",
     "ThreadsX",
@@ -39,13 +40,11 @@ println("Julia threads : ", Threads.nthreads())
 println("BLAS threads. :  ", BLAS.get_num_threads())
 
 # directories
-base_dir    = normpath(joinpath(@__DIR__, ".."))
+base_dir    = normpath(joinpath(@__DIR__, "..", ".."))
 data_dir    = joinpath(base_dir, "data")
-figures_dir = joinpath(base_dir, "figures")
 output_dir  = joinpath(base_dir, "output")
  
 # Create destination folders if needed
-mkpath(figures_dir)
 mkpath(output_dir)
 
 # time-age parameters
@@ -73,7 +72,7 @@ N0            = 200000                                     # yearly cohort size
 seed_fraction = 0.001                                      # initial fraction infected
 
 # values for parameter sweep
-beta_vals    = gamma*[1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5, 7.5, 10] #, 12.5, 15, 17.5, 20] # R0 runs from 1.5 to 20
+beta_vals    = gamma .* R0_vals  # defined by the run script
 alpha_vals   = [1.0, 0.5, 0.3333, 0.25, 0.2, 0.1, 0.05, 0.02, 0.01]
 vac_age_vals = vcat(collect(0.0:1.0:100.0), 200.0) # 200 means no vaccination
 
@@ -133,15 +132,15 @@ ifr(age; a=1.86e-5, b=0.07, c=1.86e-5) = a*exp(b*age) - c
 # new inline mortality function
 @inline function mortality(t::Float64, age::Float64, a0::Float64, a1::Float64, a2::Float64, twarmup::Float64)
     logm = t < twarmup ?  # 1a*5 is 2025, a1*30 is 2050
-           (a0 + a1*30.0 + a2*age) :
-           (a0 + a1*30.0 + a1*(t - twarmup) + a2*age)
+           (a0 + a1*mortality_reference_year_offset + a2*age) :
+           (a0 + a1*mortality_reference_year_offset + a1*(t - twarmup) + a2*age)
     return 10.0^logm
 end
 
 #= mortality rate function
 function mu(t,age; a0=-5.054,a1=-0.006121,a2=0.04695,twarmup=150.0) # NB this matters for cohort vs period YLL
     #logm = t<twarmup ? a0 + a2*age : a0 + a1*(t-twarmup) + a2*age
-    logm = t<twarmup ? a0 + a1*5.0 + a2*age : a0 + a1*5.0 + a1*(t-twarmup) + a2*age # start from 2025
+    logm = t<twarmup ? a0 + a1*mortality_reference_year_offset + a2*age : a0 + a1*mortality_reference_year_offset + a1*(t-twarmup) + a2*age # start from 2025
     return 10.0^logm
 end
 =#
@@ -225,7 +224,7 @@ function f_optim!(du,u,p,t)
         age  = age_points_c[1]
         λ    = β * fsc * FOI[1]
         vr   = vac_rates[1]
-        #logm = t < mu_twarmup ? mu_a0 + mu_a1*5.0 + mu_a2*age : mu_a0 + mu_a1*5.0 + mu_a1*(t-mu_twarmup) + mu_a2*age
+        #logm = t < mu_twarmup ? mu_a0 + mu_a1*mortality_reference_year_offset + mu_a2*age : mu_a0 + mu_a1*mortality_reference_year_offset + mu_a1*(t-mu_twarmup) + mu_a2*age
         #μ    = 10.0^logm
         μ = mortality(t, age, mu_a0, mu_a1, mu_a2, mu_twarmup) # still slightly slower than the above, not much
         dS_da  = (S[1] - N0_c)/da_c 
@@ -246,7 +245,7 @@ function f_optim!(du,u,p,t)
         age  = age_points_c[i]
         λ    = β * fsc * FOI[i]
         vr   = vac_rates[i]
-        #logm = t < mu_twarmup ? mu_a0 + mu_a1*5.0 + mu_a2*age : mu_a0 + mu_a1*5.0 + mu_a1*(t-mu_twarmup) + mu_a2*age
+        #logm = t < mu_twarmup ? mu_a0 + mu_a1*mortality_reference_year_offset + mu_a2*age : mu_a0 + mu_a1*mortality_reference_year_offset + mu_a1*(t-mu_twarmup) + mu_a2*age
         #μ    = 10.0^logm
         μ = mortality(t, age, mu_a0, mu_a1, mu_a2, mu_twarmup)
         dS_da  = (S[i] - S[i-1])/da_c
@@ -350,100 +349,43 @@ function run_one!(β::Float64, vac_start::Float64, α::Float64)
      total_mortality=mean(mort_vals), total_yll=mean(yll_vals))
 end
 
-# solve with threads
-prog = Progress(length(param_sets); desc="running parameter sweeps", barlen=40, dt=5.0)
-tuples = ThreadsX.map(enumerate(param_sets)) do (i, ps)
-    result = run_one!(ps[1], ps[2], ps[3])
-    next!(prog)
-    return result
+
+function run_general_sweep()
+    # solve with threads
+    prog = Progress(length(param_sets); desc="running parameter sweeps", barlen=40, dt=5.0)
+    tuples = ThreadsX.map(enumerate(param_sets)) do (i, ps)
+        result = run_one!(ps[1], ps[2], ps[3])
+        next!(prog)
+        return result
+    end
+
+    # build dataframes
+    df_mort = DataFrame(;
+        beta            = getfield.(tuples, :beta),
+        vac_age         = getfield.(tuples, :vac_age),
+        alpha           = getfield.(tuples, :alpha),
+        total_mortality = getfield.(tuples, :total_mortality),
+    )
+
+    df_yll = DataFrame(;
+        beta     = getfield.(tuples, :beta),
+        vac_age  = getfield.(tuples, :vac_age),
+        alpha    = getfield.(tuples, :alpha),
+        total_yll = getfield.(tuples, :total_yll),
+    )
+
+    # trick to select youngest vaccination age when outcomes are very low (essentially 0)
+    age_penalty = 1e-2 # penalty per year of age (earlier 1e-4)
+    df_mort.total_mortality_adj =
+        df_mort.total_mortality .+ ifelse.(df_mort.vac_age .== 200.0, 0.0, age_penalty .* df_mort.vac_age)
+    df_yll.total_yll_adj =
+        df_yll.total_yll .+ ifelse.(df_yll.vac_age .== 200.0, 0.0, age_penalty .* df_yll.vac_age)
+
+    # export results
+    dat = "_" * Dates.format(Dates.today(), "yyyymmdd")
+    CSV.write(joinpath(output_dir, "mortality_$(scenario_year)_nuhalf$(dat).csv"), df_mort)
+    CSV.write(joinpath(output_dir, "yll_$(scenario_year)_nuhalf$(dat).csv"), df_yll)
+
+    # goodbye
+    println("finished parameter sweeps")
 end
-
-# build dataframes
-df_mort = DataFrame(;
-    beta            = getfield.(tuples, :beta),
-    vac_age         = getfield.(tuples, :vac_age),
-    alpha           = getfield.(tuples, :alpha),
-    total_mortality = getfield.(tuples, :total_mortality),
-)
-
-df_yll = DataFrame(;
-    beta     = getfield.(tuples, :beta),
-    vac_age  = getfield.(tuples, :vac_age),
-    alpha    = getfield.(tuples, :alpha),
-    total_yll = getfield.(tuples, :total_yll),
-)
-
-# trick to select youngest vaccination age when outcomes are very low (essentially 0)
-age_penalty = 1e-2 # penalty per year of age (earlier 1e-4)
-df_mort.total_mortality_adj =
-    df_mort.total_mortality .+ ifelse.(df_mort.vac_age .== 200.0, 0.0, age_penalty .* df_mort.vac_age)
-df_yll.total_yll_adj =
-    df_yll.total_yll .+ ifelse.(df_yll.vac_age .== 200.0, 0.0, age_penalty .* df_yll.vac_age)
-
-# export results
-dat = "_" * Dates.format(Dates.today(), "yyyymmdd")
-CSV.write(joinpath(output_dir, "mortality_2050_nuhalf$(dat).csv"), df_mort)
-CSV.write(joinpath(output_dir, "yll_2050_nuhalf$(dat).csv"), df_yll)
-
-# goodbye
-println("finished parameter sweeps")
-
-#########################################################################
-### this part is just for plotting a single simulation - remove later ###
-#########################################################################
-
-# re-solve one for plotting
-βp, vacp, αp = param_sets[1]
-νp = 2 * αp
-vac_rates_p = get_vac_rate_vec(collect(vacp:int_a:vac_end))
-cache_p = ODECache(n_age, age_points, da, Float64(N0), gamma, force_frac)
-prob_plot = ODEProblem(f_optim!, u0, (tmin, tmax), (βp, vac_rates_p, αp, νp, contact_matrix, cache_p))
-sol = solve(prob_plot, Tsit5(); reltol=1e-4, abstol=1e-6,
-            callback=PositiveDomain(), saveat=da, dense=false)
-
-# extract solution for plotting of last simulation
-t = sol.t
-all_u = hcat(sol.u...)
-S_mat = all_u[1:n_age,   :]'
-I_mat = all_u[n_age+1:2*n_age, :]'
-R1_mat = all_u[2*n_age+1:3*n_age, :]'
-V1_mat = all_u[3*n_age+1:4*n_age, :]'
-R2_mat = all_u[4*n_age+1:5*n_age, :]'
-V2_mat = all_u[5*n_age+1:6*n_age, :]'
-M_mat = gamma .* (I_mat .* (ifr.(age_points)'))
-
-# time series plot
-plot(t, sum(S_mat,dims=2)[:], label="S")
-plot!(t, sum(I_mat,dims=2)[:], label="I")
-plot!(t, sum(R1_mat,dims=2)[:]+sum(R2_mat,dims=2)[:], label="R")
-plot!(t, sum(V1_mat,dims=2)[:]+sum(V2_mat,dims=2)[:], label="V")
-plot!(t, sum(S_mat,dims=2)[:]+sum(I_mat,dims=2)[:]+sum(R1_mat,dims=2)[:]+sum(R2_mat,dims=2)[:]+sum(V1_mat,dims=2)[:]+sum(V2_mat,dims=2)[:], label="N")
-xlabel!("time (years)")
-ylabel!("number")
-savefig(joinpath(figures_dir, "compartments_over_time.pdf"))
-
-# total mortality plot
-mort_total = vec(sum(M_mat, dims=2))
-sel = t .>= 20
-plot(t[sel], mort_total[sel], label="mortality")
-xlabel!("time (years)")
-ylabel!("~number")
-savefig(joinpath(figures_dir, "mortality_over_time.pdf"))
-
-# time-age heatmaps
-maxI = maximum(I_mat[end, :])
-maxM = maximum(M_mat[end, :])
-heatmap(t, age_points, S_mat', xlabel="time (years)", ylabel="age (years)")
-savefig(joinpath(figures_dir, "heatmap_S.pdf"))
-heatmap(t, age_points, I_mat', xlabel="time (years)", ylabel="age (years)", clim=(0, maxI))
-savefig(joinpath(figures_dir, "heatmap_I.pdf"))
-heatmap(t, age_points, (R1_mat+R2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(joinpath(figures_dir, "heatmap_R.pdf"))
-heatmap(t, age_points, (V1_mat+V2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(joinpath(figures_dir, "heatmap_V.pdf"))
-heatmap(t, age_points, M_mat', xlabel="time (years)", ylabel="age (years)", clim=(0, maxM))
-savefig(joinpath(figures_dir, "heatmap_M.pdf"))
-heatmap(t, age_points, (S_mat+I_mat+R1_mat+R2_mat+V1_mat+V2_mat)', xlabel="time (years)", ylabel="age (years)")
-savefig(joinpath(figures_dir, "heatmap_N.pdf"))
-
-println("finished plotting")
